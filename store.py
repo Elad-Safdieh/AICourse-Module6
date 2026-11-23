@@ -100,27 +100,29 @@ class GcpStore:
         self.db = firestore.Client(project=project)
         self.bucket = storage.Client(project=project).bucket(bucket)
         self.bucket_name = bucket
+        # Own collection name: the (default) Firestore DB is shared with other course projects.
+        self.col = os.environ.get("FIRESTORE_COLLECTION", "ofek_customers")
 
     def seed(self) -> None:
         """Create the two customer folders if missing (empty document lists). Idempotent."""
         for c in SEED_CUSTOMERS:
-            ref = self.db.collection("customers").document(c["id"])
+            ref = self.db.collection(self.col).document(c["id"])
             if not ref.get().exists:
                 ref.set({"name": c["name"], "created_at": _now()})
 
     def list_customers(self) -> list[dict]:
         out = []
-        for snap in self.db.collection("customers").stream():
-            count = self.db.collection("customers").document(snap.id).collection("documents").count().get()
+        for snap in self.db.collection(self.col).stream():
+            count = self.db.collection(self.col).document(snap.id).collection("documents").count().get()
             out.append({"id": snap.id, "name": snap.get("name"), "document_count": int(count[0][0].value)})
         return out
 
     def get_customer(self, customer_id: str) -> dict | None:
-        snap = self.db.collection("customers").document(customer_id).get()
+        snap = self.db.collection(self.col).document(customer_id).get()
         return {"id": snap.id, "name": snap.get("name")} if snap.exists else None
 
     def list_documents(self, customer_id: str) -> list[dict]:
-        col = self.db.collection("customers").document(customer_id).collection("documents")
+        col = self.db.collection(self.col).document(customer_id).collection("documents")
         docs = [{"id": s.id, "customer_id": customer_id, **s.to_dict()} for s in col.stream()]
         return sorted(docs, key=lambda d: d["uploaded_at"])
 
@@ -132,11 +134,11 @@ class GcpStore:
         record = {"file_name": file_name, "size_bytes": len(content), "source": source,
                   "uploaded_at": _now(), "file_ref": f"gs://{self.bucket_name}/{object_name}"}
         # 2) then the assignment record
-        self.db.collection("customers").document(customer_id).collection("documents").document(doc_id).set(record)
+        self.db.collection(self.col).document(customer_id).collection("documents").document(doc_id).set(record)
         return {"id": doc_id, "customer_id": customer_id, **record}
 
     def get_document(self, customer_id: str, doc_id: str) -> dict | None:
-        snap = (self.db.collection("customers").document(customer_id)
+        snap = (self.db.collection(self.col).document(customer_id)
                 .collection("documents").document(doc_id).get())
         return {"id": snap.id, "customer_id": customer_id, **snap.to_dict()} if snap.exists else None
 
@@ -150,5 +152,7 @@ def make_store():
     if backend == "gcp":
         project = os.environ["GOOGLE_CLOUD_PROJECT"]
         bucket = os.environ["GCS_BUCKET"]
-        return GcpStore(project, bucket)
+        s = GcpStore(project, bucket)
+        s.seed()  # create the two customer folders (empty) if they do not exist yet
+        return s
     return LocalStore(os.environ.get("LOCAL_DATA_DIR", ".local-data"))
