@@ -49,3 +49,22 @@ gcloud run deploy shared-docs-api --source . --project ai-gcp-course-test --regi
 - Uploading through the dashboard UI itself (file picker) and opening the files by clicking in a browser.
 - The n8n form *test URL* flow (Execute Workflow in the editor); tested via the published production URL instead.
 - Bonus (PDF thumbnails) not built.
+
+## Exercise 2 - Google sign-in + Drive
+- Sign-in: official Google button (GIS), ID token verified on the server, session cookie holds only {sub,email,name}.
+- Drive: requested only on "חיבור ל-Drive", scope `drive.file`; the approving account must match the signed-in one.
+  Tokens stay server-side (Firestore `ofek_customers_drive_tokens`). Copies go to Drive folder "הצעות מחיר מה-CRM".
+- Google Client: JS origin `https://shared-docs-api-799772464889.me-west1.run.app`, redirect URIs
+  `.../auth/drive/callback` (Drive) and `.../auth/callback` (MCP OAuth, exercise 3).
+- Secrets: `shared-docs-session-key`, `shared-docs-oauth-client-secret` (Secret Manager).
+
+## Exercise 3 - CRM MCP server
+- URL: `https://shared-docs-api-799772464889.me-west1.run.app/mcp` (Streamable HTTP, HTTPS only), FastMCP 4.2.5 GoogleProvider.
+- OAuth: claude.ai registers via DCR; the server issues its own JWT with audience = the /mcp URL; the Google token
+  behind it must belong to our Google client. Registrations stored encrypted in Firestore (`ofek_mcp_oauth*`).
+- Every tool call checks the caller's Google email against `ALLOWED_EMAILS` before reading/writing a folder.
+- Tools: `find_latest_customer_quote(customer_name)` (read-only; returns all matches + distinguishing details),
+  `add_customer_note(customer_id, note)` (id only, never a name; returns the note exactly as saved; same text
+  within 10 min is not duplicated).
+- Notes: Firestore `ofek_customers/{id}/notes`, `GET /api/customers/{id}/notes`, shown on the dashboard.
+- Verified in the cloud: no token -> 401, forged token -> 401, no note written; DCR registration works.
