@@ -193,3 +193,42 @@ def make_store():
         s.seed()  # create the two customer folders (empty) if they do not exist yet
         return s
     return LocalStore(os.environ.get("LOCAL_DATA_DIR", ".local-data"))
+
+
+# ---------- Notes (exercise 3) ----------
+# Notes live in the customer's folder next to its documents:
+#   local: index.json customers.{id}.notes[]     gcp: {FIRESTORE_COLLECTION}/{customer_id}/notes/{note_id}
+
+def _new_note_id() -> str:
+    return "note-" + uuid.uuid4().hex[:12]
+
+
+def _local_add_note(self, customer_id: str, text: str, created_by: str, via: str) -> dict:
+    note = {"id": _new_note_id(), "customer_id": customer_id, "text": text,
+            "created_by": created_by, "via": via, "created_at": _now()}
+    with self._lock:
+        data = self._load()
+        data["customers"][customer_id].setdefault("notes", []).append(note)
+        self._save(data)
+    return note
+
+
+def _local_list_notes(self, customer_id: str) -> list[dict]:
+    return sorted(self._load()["customers"][customer_id].get("notes", []), key=lambda n: n["created_at"])
+
+
+def _gcp_add_note(self, customer_id: str, text: str, created_by: str, via: str) -> dict:
+    note_id = _new_note_id()
+    rec = {"text": text, "created_by": created_by, "via": via, "created_at": _now()}
+    self.db.collection(self.col).document(customer_id).collection("notes").document(note_id).set(rec)
+    return {"id": note_id, "customer_id": customer_id, **rec}
+
+
+def _gcp_list_notes(self, customer_id: str) -> list[dict]:
+    col = self.db.collection(self.col).document(customer_id).collection("notes")
+    return sorted(({"id": s.id, "customer_id": customer_id, **s.to_dict()} for s in col.stream()),
+                  key=lambda n: n["created_at"])
+
+
+LocalStore.add_note, LocalStore.list_notes = _local_add_note, _local_list_notes
+GcpStore.add_note, GcpStore.list_notes = _gcp_add_note, _gcp_list_notes

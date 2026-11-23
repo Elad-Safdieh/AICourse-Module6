@@ -50,6 +50,16 @@ google_drive.init(store)
 app.include_router(google_drive.router)
 REQUIRE_LOGIN_FOR_FILES = os.environ.get("REQUIRE_LOGIN_FOR_FILES", "1") == "1"
 
+# ---------- Exercise 3: MCP server at /mcp (only when Google OAuth is configured - never unauthenticated) ----------
+_mcp_app = None
+if os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET") and os.environ.get("SESSION_SECRET"):
+    import mcp_server
+    _mcp = mcp_server.build(store, os.environ["GOOGLE_CLIENT_ID"], os.environ["GOOGLE_CLIENT_SECRET"],
+                            os.environ["SESSION_SECRET"],
+                            os.environ.get("GOOGLE_CLOUD_PROJECT") if os.environ.get("STORE_BACKEND") == "gcp" else None)
+    _mcp_app = _mcp.http_app(path="/mcp")
+    app.router.lifespan_context = _mcp_app.lifespan
+
 
 # ---------- response models (these drive the OpenAPI schema) ----------
 
@@ -201,6 +211,9 @@ def save_document_to_drive(customer_id: str, document_id: str, request: Request)
 def get_document_file(customer_id: str, document_id: str, request: Request):
     """Opens the PDF inside the CRM. The service checks access first: a Google-signed-in user is required."""
     if REQUIRE_LOGIN_FOR_FILES and not google_drive.current_user(request):
+        if "text/html" in request.headers.get("accept", ""):
+            # A person clicked a link (e.g. from Claude): sign in on the dashboard, then come back here.
+            return RedirectResponse(f"/dashboard?open={quote(request.url.path)}")
         raise HTTPException(401, "Sign in with Google to open documents")
     _require_customer(customer_id)
     d = store.get_document(customer_id, document_id)
@@ -213,6 +226,31 @@ def get_document_file(customer_id: str, document_id: str, request: Request):
 
 # ---------- pages ----------
 
+class Note(BaseModel):
+    id: str
+    customer_id: str
+    text: str
+    created_by: str
+    via: str = Field(description="mcp = written by Claude through the MCP connector")
+    created_at: str
+
+
+class NoteList(BaseModel):
+    customer: Customer
+    notes: list[Note]
+
+
+@app.get("/api/customers/{customer_id}/notes", response_model=NoteList, operation_id="listCustomerNotes",
+         summary="GET - list notes in one customer's folder", tags=["notes"],
+         responses={404: {"model": Error, "description": "Customer does not exist"}})
+def list_customer_notes(customer_id: str):
+    """Notes saved in the customer's folder (oldest first). Works also when the list is empty."""
+    c = _require_customer(customer_id)
+    notes = store.list_notes(customer_id)
+    docs = store.list_documents(customer_id)
+    return {"customer": {**c, "document_count": len(docs)}, "notes": notes}
+
+
 @app.get("/dashboard", include_in_schema=False)
 def dashboard():
     return FileResponse(STATIC / "dashboard.html")
@@ -221,3 +259,9 @@ def dashboard():
 @app.get("/", include_in_schema=False)
 def root():
     return RedirectResponse("/dashboard")
+
+
+# Mounted LAST so every route above wins; the MCP app adds /mcp plus its OAuth routes
+# (/.well-known/*, /register, /authorize, /token, /auth/callback, /consent).
+if _mcp_app is not None:
+    app.mount("/", _mcp_app)

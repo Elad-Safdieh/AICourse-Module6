@@ -61,6 +61,11 @@
     <div id="docs"></div>
   </section>
 
+  <section class="card" id="notesCard" hidden>
+    <h2>הערות בתיק</h2>
+    <div id="notes"></div>
+  </section>
+
   <section class="card" id="uploadCard" hidden>
     <h2>העלאת קובץ לתיקייה</h2>
     <div class="dest" id="dest"></div>
@@ -90,10 +95,20 @@ async function select(id) {
   current = id;
   $('msg').textContent = '';
   await Promise.all([loadCustomers(), loadDocs()]);
-  $('docsCard').hidden = $('uploadCard').hidden = false;
+  $('docsCard').hidden = $('uploadCard').hidden = $('notesCard').hidden = false;
+}
+
+async function loadNotes() {
+  const res = await fetch(`/api/customers/${encodeURIComponent(current)}/notes`);
+  const data = await res.json();
+  if (!res.ok) { $('notes').textContent = data.detail; return; }
+  $('notes').innerHTML = data.notes.length ? `<table><thead><tr><th>הערה</th><th>נכתבה ע"י</th><th>דרך</th><th>מתי</th></tr></thead><tbody>${
+    data.notes.map(n => `<tr><td>${esc(n.text)}</td><td>${esc(n.created_by)}</td><td>${n.via === 'mcp' ? 'Claude (MCP)' : esc(n.via)}</td><td>${new Date(n.created_at).toLocaleString('he-IL')}</td></tr>`).join('')
+  }</tbody></table>` : '<div class="empty">אין הערות בתיק.</div>';
 }
 
 async function loadDocs() {
+  loadNotes();
   const res = await fetch(`/api/customers/${encodeURIComponent(current)}/documents`);
   const data = await res.json();
   if (!res.ok) { $('docs').textContent = data.detail; return; }
@@ -185,14 +200,28 @@ async function loadMe() {
 async function onCredential(resp) {
   const res = await fetch('/auth/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential: resp.credential }) });
   if (!res.ok) showBanner('err', 'הכניסה עם Google לא אומתה בשרת.');
-  await loadMe(); if (current) await loadDocs();
+  await loadMe();
+  const pending = sessionStorage.getItem('openAfterLogin');
+  if (me.user && pending) { sessionStorage.removeItem('openAfterLogin'); location.href = pending; return; }
+  if (current) await loadDocs();
 }
 async function logout() { await fetch('/auth/logout', { method: 'POST' }); if (window.google) google.accounts.id.disableAutoSelect(); await loadMe(); if (current) await loadDocs(); }
 async function disconnectDrive() { await fetch('/auth/drive/disconnect', { method: 'POST' }); await loadMe(); if (current) await loadDocs(); }
 
 const driveResult = new URLSearchParams(location.search).get('drive');
 if (driveResult && DRIVE_RESULTS[driveResult]) { showBanner(...DRIVE_RESULTS[driveResult]); history.replaceState(null, '', '/dashboard'); }
-loadMe().then(loadCustomers);
+const params = new URLSearchParams(location.search);
+const openAfterLogin = params.get('open');
+const startCustomer = params.get('customer');
+if (openAfterLogin && openAfterLogin.startsWith('/api/')) {
+  sessionStorage.setItem('openAfterLogin', openAfterLogin);
+  showBanner('info', 'כדי לפתוח את המסמך יש להיכנס עם Google. אחרי הכניסה הוא ייפתח אוטומטית.');
+}
+loadMe().then(async () => {
+  const pending = sessionStorage.getItem('openAfterLogin');
+  if (me && me.user && pending) { sessionStorage.removeItem('openAfterLogin'); location.href = pending; return; }
+  if (startCustomer) await select(startCustomer); else await loadCustomers();
+});
 
 </script>
 </body>
