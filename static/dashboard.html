@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>תיקיות לקוחות | אופק</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1d2330; --muted:#667085; --line:#e4e7ec; --accent:#2b59c3; --ok:#127a3e; --err:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, "Segoe UI", Arial, sans-serif; background:var(--bg); color:var(--ink); }
+  header { background:var(--card); border-bottom:1px solid var(--line); padding:14px 20px; display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header a { color:var(--accent); font-size:14px; }
+  main { max-width:880px; margin:24px auto; padding:0 16px; display:grid; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; }
+  .customers { display:flex; gap:10px; flex-wrap:wrap; }
+  .customers button { border:1px solid var(--line); background:var(--card); border-radius:8px; padding:10px 16px; cursor:pointer; font-size:15px; text-align:start; }
+  .customers button small { display:block; color:var(--muted); font-size:12px; direction:ltr; text-align:right; }
+  .customers button[aria-pressed="true"] { border-color:var(--accent); box-shadow:0 0 0 2px #2b59c333; }
+  h2 { font-size:16px; margin:0 0 12px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:start; padding:8px 6px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:500; }
+  .tag { font-size:12px; padding:2px 8px; border-radius:20px; background:#eef2ff; color:#3538cd; }
+  .tag.field { background:#ecfdf3; color:var(--ok); }
+  .empty { color:var(--muted); padding:12px 0; }
+  form { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  form button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:9px 16px; cursor:pointer; }
+  form button:disabled { opacity:.5; cursor:default; }
+  #msg { font-size:14px; min-height:20px; margin-top:10px; }
+  #msg.ok { color:var(--ok); } #msg.err { color:var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>אופק שירותי מחשוב · תיקיות לקוחות</h1>
+  <a href="/docs" target="_blank">תיעוד API (Swagger)</a>
+</header>
+<main>
+  <section class="card">
+    <h2>בחר לקוח</h2>
+    <div class="customers" id="customers">טוען…</div>
+  </section>
+
+  <section class="card" id="docsCard" hidden>
+    <h2 id="docsTitle">מסמכים</h2>
+    <div id="docs"></div>
+  </section>
+
+  <section class="card" id="uploadCard" hidden>
+    <h2>העלאת קובץ לתיקייה</h2>
+    <form id="upload">
+      <input type="file" id="file" accept="application/pdf,.pdf" required>
+      <button type="submit" id="uploadBtn">העלה</button>
+    </form>
+    <div id="msg"></div>
+  </section>
+</main>
+<script>
+// The dashboard only talks to the same /api/* operations the n8n form uses.
+let current = null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+async function loadCustomers() {
+  const res = await fetch('/api/customers');
+  const list = await res.json();
+  $('customers').innerHTML = list.map(c =>
+    `<button data-id="${esc(c.id)}" aria-pressed="${c.id === current}">${esc(c.name)}
+       <small>${esc(c.id)} · ${c.document_count} מסמכים</small></button>`).join('');
+  $('customers').querySelectorAll('button').forEach(b => b.onclick = () => select(b.dataset.id));
+}
+
+async function select(id) {
+  current = id;
+  $('msg').textContent = '';
+  await Promise.all([loadCustomers(), loadDocs()]);
+  $('docsCard').hidden = $('uploadCard').hidden = false;
+}
+
+async function loadDocs() {
+  const res = await fetch(`/api/customers/${encodeURIComponent(current)}/documents`);
+  const data = await res.json();
+  if (!res.ok) { $('docs').textContent = data.detail; return; }
+  $('docsTitle').textContent = `מסמכים בתיקייה של ${data.customer.name}`;
+  if (!data.documents.length) { $('docs').innerHTML = '<div class="empty">התיקייה ריקה.</div>'; return; }
+  $('docs').innerHTML = `<table><thead><tr><th>קובץ</th><th>מקור</th><th>הועלה</th><th></th></tr></thead><tbody>${
+    data.documents.map(d => `<tr>
+      <td>${esc(d.file_name)}</td>
+      <td><span class="tag ${d.source === 'field' ? 'field' : ''}">${{office:'משרד', field:'שטח', unknown:'לא צוין'}[d.source] || esc(d.source)}</span></td>
+      <td>${new Date(d.uploaded_at).toLocaleString('he-IL')}</td>
+      <td><a href="${esc(d.file_url)}" target="_blank">פתח קובץ</a></td></tr>`).join('')
+  }</tbody></table>`;
+}
+
+$('upload').onsubmit = async (e) => {
+  e.preventDefault();
+  const f = $('file').files[0];
+  if (!f) return;
+  const body = new FormData();
+  body.append('customer_id', current);
+  body.append('source', 'office');
+  body.append('file', f);
+  $('uploadBtn').disabled = true;
+  try {
+    const res = await fetch('/api/documents', { method: 'POST', body });
+    const data = await res.json();
+    $('msg').className = res.ok ? 'ok' : 'err';
+    $('msg').textContent = res.ok ? `הקובץ ${data.file_name} נשמר.` : `נדחה (${res.status}): ${data.detail}`;
+    if (res.ok) { $('file').value = ''; await Promise.all([loadCustomers(), loadDocs()]); }
+  } finally { $('uploadBtn').disabled = false; }
+};
+
+loadCustomers();
+</script>
+</body>
+</html>
