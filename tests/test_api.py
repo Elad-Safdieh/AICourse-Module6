@@ -1,5 +1,6 @@
 import os, importlib
 os.environ["STORE_BACKEND"] = "local"
+os.environ["REQUIRE_LOGIN_FOR_FILES"] = "0"
 def client(tmp_path):
     os.environ["LOCAL_DATA_DIR"] = str(tmp_path)
     import main; importlib.reload(main)

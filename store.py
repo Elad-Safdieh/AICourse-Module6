@@ -86,6 +86,28 @@ class LocalStore:
     def read_file(self, record: dict) -> bytes:
         return (self.files / record["file_ref"].removeprefix("local://")).read_bytes()
 
+    # --- Drive (exercise 2) ---
+    def set_drive_copy(self, customer_id: str, doc_id: str, user_sub: str, info: dict) -> None:
+        with self._lock:
+            data = self._load()
+            for d in data["customers"][customer_id]["documents"]:
+                if d["id"] == doc_id:
+                    d.setdefault("drive_copies", {})[user_sub] = info
+            self._save(data)
+
+    def get_drive_token(self, user_sub: str) -> dict | None:
+        return self._load().get("drive_tokens", {}).get(user_sub)
+
+    def set_drive_token(self, user_sub: str, token: dict | None) -> None:
+        with self._lock:
+            data = self._load()
+            tokens = data.setdefault("drive_tokens", {})
+            if token is None:
+                tokens.pop(user_sub, None)
+            else:
+                tokens[user_sub] = token
+            self._save(data)
+
 
 class GcpStore:
     """Cloud Storage for the PDF bytes, Firestore for the customer-assignment records.
@@ -145,6 +167,21 @@ class GcpStore:
     def read_file(self, record: dict) -> bytes:
         object_name = record["file_ref"].removeprefix(f"gs://{self.bucket_name}/")
         return self.bucket.blob(object_name).download_as_bytes()
+
+    # --- Drive (exercise 2) ---
+    # Per-user Drive copy is recorded on the document: drive_copies.{google_sub} = {file_id, web_view_link, ...}
+    def set_drive_copy(self, customer_id: str, doc_id: str, user_sub: str, info: dict) -> None:
+        (self.db.collection(self.col).document(customer_id).collection("documents").document(doc_id)
+         .set({"drive_copies": {user_sub: info}}, merge=True))
+
+    # Drive OAuth tokens live server-side in Firestore (never in the browser cookie).
+    def get_drive_token(self, user_sub: str) -> dict | None:
+        snap = self.db.collection(self.col + "_drive_tokens").document(user_sub).get()
+        return snap.to_dict() if snap.exists else None
+
+    def set_drive_token(self, user_sub: str, token: dict | None) -> None:
+        ref = self.db.collection(self.col + "_drive_tokens").document(user_sub)
+        ref.delete() if token is None else ref.set(token)
 
 
 def make_store():

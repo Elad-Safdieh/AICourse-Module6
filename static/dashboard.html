@@ -29,7 +29,16 @@
   form button:disabled { opacity:.5; cursor:default; }
   #msg { font-size:14px; min-height:20px; margin-top:10px; }
   #msg.ok { color:var(--ok); } #msg.err { color:var(--err); }
+  .account { display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:14px; }
+  .account button, .btn { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:6px 12px; cursor:pointer; font-size:13px; color:var(--ink); text-decoration:none; display:inline-block; }
+  .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .pill { font-size:12px; padding:2px 8px; border-radius:20px; background:#f2f4f7; color:var(--muted); }
+  .pill.on { background:#ecfdf3; color:var(--ok); } .pill.bad { background:#fef3f2; color:var(--err); }
+  #banner { padding:10px 14px; border-radius:8px; font-size:14px; }
+  #banner.ok { background:#ecfdf3; color:var(--ok); } #banner.err { background:#fef3f2; color:var(--err); } #banner.info { background:#eef4ff; color:#3538cd; }
+  .dest { font-size:13px; color:var(--muted); width:100%; margin-bottom:8px; }
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <header>
@@ -37,6 +46,11 @@
   <a href="/docs" target="_blank">תיעוד API (Swagger)</a>
 </header>
 <main>
+  <div id="banner" hidden></div>
+  <section class="card">
+    <h2>חשבון Google ו-Drive</h2>
+    <div class="account" id="account">טוען…</div>
+  </section>
   <section class="card">
     <h2>בחר לקוח</h2>
     <div class="customers" id="customers">טוען…</div>
@@ -49,6 +63,7 @@
 
   <section class="card" id="uploadCard" hidden>
     <h2>העלאת קובץ לתיקייה</h2>
+    <div class="dest" id="dest"></div>
     <form id="upload">
       <input type="file" id="file" accept="application/pdf,.pdf" required>
       <button type="submit" id="uploadBtn">העלה</button>
@@ -84,12 +99,12 @@ async function loadDocs() {
   if (!res.ok) { $('docs').textContent = data.detail; return; }
   $('docsTitle').textContent = `מסמכים בתיקייה של ${data.customer.name}`;
   if (!data.documents.length) { $('docs').innerHTML = '<div class="empty">התיקייה ריקה.</div>'; return; }
-  $('docs').innerHTML = `<table><thead><tr><th>קובץ</th><th>מקור</th><th>הועלה</th><th></th></tr></thead><tbody>${
+  $('docs').innerHTML = `<table><thead><tr><th>קובץ</th><th>מקור</th><th>הועלה</th><th>Drive</th></tr></thead><tbody>${
     data.documents.map(d => `<tr>
-      <td>${esc(d.file_name)}</td>
+      <td><a href="${esc(d.file_url)}" target="_blank" title="פתיחה ב-CRM">${esc(d.file_name)}</a></td>
       <td><span class="tag ${d.source === 'field' ? 'field' : ''}">${{office:'משרד', field:'שטח', unknown:'לא צוין'}[d.source] || esc(d.source)}</span></td>
       <td>${new Date(d.uploaded_at).toLocaleString('he-IL')}</td>
-      <td><a href="${esc(d.file_url)}" target="_blank">פתח קובץ</a></td></tr>`).join('')
+      <td>${driveCell(d)}</td></tr>`).join('')
   }</tbody></table>`;
 }
 
@@ -106,12 +121,79 @@ $('upload').onsubmit = async (e) => {
     const res = await fetch('/api/documents', { method: 'POST', body });
     const data = await res.json();
     $('msg').className = res.ok ? 'ok' : 'err';
-    $('msg').textContent = res.ok ? `הקובץ ${data.file_name} נשמר.` : `נדחה (${res.status}): ${data.detail}`;
+    $('msg').textContent = res.ok ? `הקובץ ${data.file_name} נשמר בתיקיית הלקוח.` + driveMsg(data.drive) : `נדחה (${res.status}): ${data.detail}`;
     if (res.ok) { $('file').value = ''; await Promise.all([loadCustomers(), loadDocs()]); }
   } finally { $('uploadBtn').disabled = false; }
 };
 
-loadCustomers();
+// ---------- Exercise 2: Google sign-in + Drive ----------
+// Sign-in asks for no Drive permission. Drive is requested only via the "חיבור ל-Drive" button.
+let me = null;
+function driveMsg(dr) {
+  if (!dr) return '';
+  if (dr.status === 'saved') return ' עותק נשמר גם ב-Drive שלך.';
+  if (dr.status === 'failed') { $('msg').className = 'err'; return ` נשמר ב-CRM אבל לא נשמר ב-Drive (${dr.error}). אפשר ללחוץ "נסה שוב ב-Drive" ליד הקובץ.`; }
+  return ' לא נשמר ב-Drive (Drive לא מחובר).';
+}
+function driveCell(d) {
+  if (!d.drive) return '<span class="pill">היכנס כדי לראות</span>';
+  if (d.drive.status === 'saved') return `<a class="btn" href="${esc(d.drive.web_view_link)}" target="_blank" rel="noopener">פתיחה ב-Drive</a>`;
+  if (me && me.drive_connected) return `<button class="btn" data-doc="${esc(d.id)}" onclick="retryDrive(this)">נסה שוב ב-Drive</button>`;
+  return '<span class="pill">לא ב-Drive</span>';
+}
+async function retryDrive(btn) {
+  btn.disabled = true; btn.textContent = 'שומר…';
+  const res = await fetch(`/api/customers/${encodeURIComponent(current)}/documents/${encodeURIComponent(btn.dataset.doc)}/drive`, { method: 'POST' });
+  const dr = await res.json();
+  if (res.ok && dr.status === 'saved') { await loadDocs(); showBanner('ok', 'העותק נשמר ב-Drive.'); }
+  else { btn.disabled = false; btn.textContent = 'נסה שוב ב-Drive'; showBanner('err', 'לא נשמר ב-Drive: ' + (dr.error || dr.detail || res.status) + '. הקובץ עדיין שמור ב-CRM.'); await loadMe(); }
+}
+function showBanner(kind, text) { const b = $('banner'); b.className = kind; b.textContent = text; b.hidden = false; }
+const DRIVE_RESULTS = {
+  connected: ['ok', 'Drive חובר. מעכשיו כל קובץ שתעלה מהדשבורד יישמר גם בתיקייה "הצעות מחיר מה-CRM" ב-Drive שלך.'],
+  cancelled: ['info', 'ביטלת את הגישה ל-Drive. הדשבורד ממשיך לעבוד והעלאות נשמרות ב-CRM בלבד. אפשר ללחוץ "חיבור ל-Drive" שוב בכל רגע.'],
+  wrong_account: ['err', 'אישרת Drive עם חשבון Google אחר מזה שנכנסת איתו. החיבור לא נשמר. נסה שוב ובחר את אותו חשבון.'],
+  scope_missing: ['err', 'לא אושרה הרשאת שמירת קבצים ב-Drive. נסה "חיבור ל-Drive" שוב וסמן את ההרשאה.'],
+  exchange_failed: ['err', 'החיבור ל-Drive נכשל בשלב האחרון מול Google. נסה שוב.'],
+  bad_state: ['err', 'בקשת החיבור פגה או לא תקינה. נסה "חיבור ל-Drive" שוב.'],
+  not_configured: ['err', 'החיבור ל-Drive עוד לא הוגדר בשרת (Client Secret).'],
+  signin_first: ['info', 'קודם יש להיכנס עם Google.'],
+};
+async function loadMe() {
+  me = await (await fetch('/auth/me')).json();
+  const a = $('account');
+  if (!me.configured) { a.innerHTML = '<span class="pill bad">כניסה עם Google עוד לא הוגדרה בשרת</span>'; return; }
+  if (!me.user) {
+    a.innerHTML = '<div id="gbtn"></div><span class="pill">לא מחובר</span>';
+    const render = () => {
+      google.accounts.id.initialize({ client_id: me.client_id, callback: onCredential, ux_mode: 'popup' });
+      google.accounts.id.renderButton($('gbtn'), { theme: 'outline', size: 'large', text: 'signin_with', locale: 'he' });
+    };
+    (window.google && google.accounts && google.accounts.id) ? render() : window.addEventListener('load', render);
+    $('dest').textContent = 'לא מחובר ל-Google: הקובץ יישמר בתיקיית הלקוח בלבד.';
+    return;
+  }
+  a.innerHTML = `<span>נכנסת כ-<b>${esc(me.user.email)}</b></span>
+    ${me.drive_connected
+      ? `<span class="pill on">Drive מחובר</span><button onclick="disconnectDrive()">ניתוק Drive</button>`
+      : `<span class="pill">Drive לא מחובר</span><a class="btn primary" href="/auth/drive/start">חיבור ל-Drive</a>`}
+    <button onclick="logout()">יציאה</button>`;
+  $('dest').innerHTML = me.drive_connected
+    ? `עותק יישמר גם ב-Drive של <b>${esc(me.user.email)}</b>, בתיקייה "${esc(me.drive_folder)}".`
+    : `Drive לא מחובר: הקובץ יישמר בתיקיית הלקוח בלבד (לא ב-Drive של ${esc(me.user.email)}).`;
+}
+async function onCredential(resp) {
+  const res = await fetch('/auth/google', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ credential: resp.credential }) });
+  if (!res.ok) showBanner('err', 'הכניסה עם Google לא אומתה בשרת.');
+  await loadMe(); if (current) await loadDocs();
+}
+async function logout() { await fetch('/auth/logout', { method: 'POST' }); if (window.google) google.accounts.id.disableAutoSelect(); await loadMe(); if (current) await loadDocs(); }
+async function disconnectDrive() { await fetch('/auth/drive/disconnect', { method: 'POST' }); await loadMe(); if (current) await loadDocs(); }
+
+const driveResult = new URLSearchParams(location.search).get('drive');
+if (driveResult && DRIVE_RESULTS[driveResult]) { showBanner(...DRIVE_RESULTS[driveResult]); history.replaceState(null, '', '/dashboard'); }
+loadMe().then(loadCustomers);
+
 </script>
 </body>
 </html>
